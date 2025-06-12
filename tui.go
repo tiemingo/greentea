@@ -1,11 +1,13 @@
 package greentea
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -18,22 +20,31 @@ import (
 
 var commandError = ""
 
+const HISTORY_FILENAME = ".magichistory"
+
 type GreenTeaConfig struct {
 	RefreshDelay int
 	Commands     []*cli.Command
 	LogLeaf      *StringLeaf
 	QuitLeaf     *Leaf[error]  // once a print is added, the applecation quits with the added message
-	CommandLeaf  *StringLeaf   // runs added commands in the tui
+	commandLeaf  *StringLeaf   // runs added commands in the tui
 	ExitLeaf     *Leaf[func()] // functions to run on exit
+	History      *History
+}
+
+type History struct {
+	history       []string
+	historyIndex  int
+	Persistent    bool
+	SavePath      string
+	HistoryLength int
 }
 
 type model struct {
-	textInput    textinput.Model
-	width        int
-	height       int
-	history      []string
-	historyIndex int
-	config       *GreenTeaConfig
+	textInput textinput.Model
+	width     int
+	height    int
+	config    *GreenTeaConfig
 }
 
 func RunTui(config *GreenTeaConfig) {
@@ -76,7 +87,7 @@ func runTui(config *GreenTeaConfig) {
 
 	for {
 		time.Sleep(time.Millisecond * time.Duration(config.RefreshDelay))
-		if cmd, newCmd := config.CommandLeaf.Harvest(); newCmd {
+		if cmd, newCmd := config.commandLeaf.Harvest(); newCmd {
 			if err := commands.Run(context.Background(), append([]string{""}, strings.Split(strings.Trim(cmd, " "), " ")...)); err != nil {
 			}
 		}
@@ -90,11 +101,28 @@ func initialModel(config *GreenTeaConfig) model {
 	ti.CharLimit = 156
 	ti.Width = 0
 
+	config.commandLeaf = NewStringLeaf()
+
+	config.History.history = []string{}
+	config.History.historyIndex = -1
+
+	// Load history
+	if config.History.Persistent {
+		history, err := loadHistory(config.History)
+		config.History.history = history
+		if err != nil {
+			config.LogLeaf.Printlnf("Failed to load history: %s", err)
+		}
+	}
+
+	// Add safe history to exit hook
+	config.ExitLeaf.Append(func() {
+		safeHistory(config.History)
+	})
+
 	return model{
-		textInput:    ti,
-		historyIndex: -1,
-		history:      []string{},
-		config:       config,
+		textInput: ti,
+		config:    config,
 	}
 }
 
@@ -130,31 +158,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			if value := m.textInput.Value(); value != "" {
 				m.textInput.SetValue("")
-				m.config.CommandLeaf.Println(value)
-				m.history = slices.Insert(m.history, 0, value)
-				m.historyIndex = -1
+				m.config.commandLeaf.Println(value)
+
+				// Add command to history
+				m.config.History.history = slices.Insert(m.config.History.history, 0, value)
+				m.config.History.historyIndex = -1
+
+				// Re,ove items from history if over max length
+				if len(m.config.History.history) > m.config.History.HistoryLength {
+					m.config.History.history = m.config.History.history[:m.config.History.HistoryLength]
+				}
 			}
 
 		// Move up and down in command history
 		case tea.KeyUp:
-			if m.historyIndex+1 <= len(m.history)-1 {
-				m.historyIndex++
-				m.textInput.SetValue(m.history[m.historyIndex])
+			if m.config.History.historyIndex+1 <= len(m.config.History.history)-1 {
+				m.config.History.historyIndex++
+				m.textInput.SetValue(m.config.History.history[m.config.History.historyIndex])
 			}
 		case tea.KeyDown:
-			if m.historyIndex-1 >= -1 {
-				m.historyIndex--
-				if m.historyIndex == -1 {
+			if m.config.History.historyIndex-1 >= -1 {
+				m.config.History.historyIndex--
+				if m.config.History.historyIndex == -1 {
 					m.textInput.SetValue("")
 				} else {
-					m.textInput.SetValue(m.history[m.historyIndex])
+					m.textInput.SetValue(m.config.History.history[m.config.History.historyIndex])
 				}
 
 			}
 
 		// Reset history index if typing in inputfield
 		default:
-			m.historyIndex = -1
+			m.config.History.historyIndex = -1
 		}
 	}
 
@@ -221,4 +256,65 @@ func (m model) View() string {
 	return fmt.Sprint(
 		m.textInput.View(),
 	)
+}
+
+// Load history from history file in magic folder
+func loadHistory(historyConf *History) ([]string, error) {
+
+	var history []string
+	path := filepath.Join(historyConf.SavePath, HISTORY_FILENAME)
+
+	// Check if history file exists and create if not
+	s, err := os.Stat(path)
+	if err != nil || s.IsDir() {
+
+		// Create history file
+		if err = os.WriteFile(path, []byte{}, 0755); err != nil {
+			return history, fmt.Errorf("failed to create new history file: %s", err)
+		}
+	}
+
+	// Read history file
+	file, err := os.Open(path)
+	if err != nil {
+		return history, fmt.Errorf("error opening history file: %s", err)
+	}
+	defer file.Close()
+
+	// Create a new scanner
+	scanner := bufio.NewScanner(file)
+
+	// Read the file line by line
+	for scanner.Scan() {
+		line := scanner.Text() // Get the current line
+		history = append(history, line)
+	}
+
+	// Check for errors during scanning
+	if err := scanner.Err(); err != nil {
+		return history, fmt.Errorf("error reading history file: %s", err)
+	}
+
+	return history, nil
+
+}
+
+// Safe history in file in magic folder
+func safeHistory(historyConf *History) error {
+
+	path := filepath.Join(historyConf.SavePath, HISTORY_FILENAME)
+
+	// Convert history to string
+	toSave := ""
+	for _, line := range historyConf.history {
+		toSave += line + "\n"
+	}
+
+	// Overwrite file
+	if err := os.WriteFile(path, []byte(toSave), 0755); err != nil {
+		return fmt.Errorf("failed to create new history file: %s", err)
+	}
+
+	return nil
+
 }
