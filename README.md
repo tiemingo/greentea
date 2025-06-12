@@ -7,6 +7,7 @@ A Wrapper for the bubbletea golang tui libary
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -19,6 +20,10 @@ func main() {
 	logLeaf := greentea.NewStringLeaf()
 	quitLeaf := greentea.NewLeaf[error]()
 	exitLeaf := greentea.NewLeaf[func()]()
+
+	commandError := &greentea.CommandError{
+		CommandError: "",
+	}
 
 	// Set exit functions
 	exitLeaf.Append(func() {
@@ -44,15 +49,24 @@ func main() {
 
 	greentea.RunTui(&greentea.GreenTeaConfig{
 		RefreshDelay: 100,
-		Commands:     []*cli.Command{},
-		LogLeaf:      logLeaf,
-		QuitLeaf:     quitLeaf,
-		ExitLeaf:     exitLeaf,
+		Commands: []*cli.Command{
+			{
+				Name: "test",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					commandError.CommandError = "test for command error"
+					return nil
+				},
+			},
+		},
+		LogLeaf:  logLeaf,
+		QuitLeaf: quitLeaf,
+		ExitLeaf: exitLeaf,
 		History: &greentea.History{
 			Persistent:    true,
 			SavePath:      "./",
 			HistoryLength: 25,
 		},
+		CommandError: commandError,
 	})
 }
 ```

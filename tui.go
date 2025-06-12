@@ -18,8 +18,6 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var commandError = ""
-
 const HISTORY_FILENAME = ".magichistory"
 
 type GreenTeaConfig struct {
@@ -30,6 +28,11 @@ type GreenTeaConfig struct {
 	commandLeaf  *StringLeaf   // runs added commands in the tui
 	ExitLeaf     *Leaf[func()] // functions to run on exit
 	History      *History
+	CommandError *CommandError
+}
+
+type CommandError struct {
+	CommandError string
 }
 
 type History struct {
@@ -59,11 +62,11 @@ func runTui(config *GreenTeaConfig) {
 	var commands = &cli.Command{
 		HideHelp: true,
 		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
-			commandError = fmt.Sprintf("%s", err)
+			config.CommandError.CommandError = fmt.Sprintf("%s", err)
 			return nil
 		},
 		CommandNotFound: func(ctx context.Context, c *cli.Command, s string) {
-			commandError = fmt.Sprintf("%s: command not found", s)
+			config.CommandError.CommandError = fmt.Sprintf("%s: command not found", s)
 		},
 		Commands: append(config.Commands, &cli.Command{
 			Name:  "clear",
@@ -194,13 +197,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Show command error if command doesn't exist
-	if m.textInput.Value() == "" && commandError != "" {
-		m.textInput.Placeholder = commandError
+	if m.textInput.Value() == "" && m.config.CommandError.CommandError != "" {
+		m.textInput.Placeholder = m.config.CommandError.CommandError
 	} else {
 		m.textInput.Placeholder = "Enter command"
 	}
 	if m.textInput.Value() != "" {
-		commandError = ""
+		m.config.CommandError.CommandError = ""
 	}
 
 	// Update width and input of inputfield
