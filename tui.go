@@ -109,19 +109,20 @@ func initialModel(config *GreenTeaConfig) model {
 	config.History.history = []string{}
 	config.History.historyIndex = -1
 
-	// Load history
 	if config.History.Persistent {
+
+		// Load history
 		history, err := loadHistory(config.History)
 		config.History.history = history
 		if err != nil {
 			config.LogLeaf.Printlnf("Failed to load history: %s", err)
 		}
-	}
 
-	// Add safe history to exit hook
-	config.ExitLeaf.Append(func() {
-		safeHistory(config.History)
-	})
+		// Add safe history to exit hook
+		config.ExitLeaf.Append(func() {
+			safeHistory(config.History)
+		})
+	}
 
 	return model{
 		textInput: ti,
